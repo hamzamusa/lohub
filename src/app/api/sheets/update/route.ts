@@ -1,18 +1,31 @@
 import { NextResponse } from 'next/server'
 import { google } from 'googleapis'
-import path from 'path'
 import { getSupabaseRouteClient } from '@/lib/supabaseRouteClient'
+import { isSheetsF1AppendEnabled } from '@/lib/sheetsF1AppendEnabled'
 import OpenAI from 'openai'
 
-// Initialize Google Sheets
-const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_VISION || '{}'),
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-})
+function getGoogleSheetsClient() {
+  const credentialsJson = process.env.GOOGLE_VISION || process.env.GOOGLE_SHEETS
+  if (!credentialsJson?.trim()) {
+    throw new Error('GOOGLE_VISION or GOOGLE_SHEETS environment variable is not set')
+  }
 
-const sheets = google.sheets({ version: 'v4', auth })
+  let credentials: Record<string, unknown>
+  try {
+    credentials = JSON.parse(credentialsJson)
+  } catch (error) {
+    throw new Error(
+      `Failed to parse Google credentials JSON: ${error instanceof Error ? error.message : 'Unknown error'}`
+    )
+  }
 
-// Initialize OpenAI client lazily (only when needed)
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  })
+  return google.sheets({ version: 'v4', auth })
+}
+
 function getOpenAIClient(): OpenAI {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
@@ -25,18 +38,19 @@ async function translateToEnglish(text: string): Promise<string> {
   try {
     const openai = getOpenAIClient()
     const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: 'gpt-3.5-turbo',
       messages: [
         {
-          role: "system",
-          content: "You are a translator. Translate the given Arabic text to English. Keep any numbers and special characters as is. Return ONLY the translated text, nothing else."
+          role: 'system',
+          content:
+            'You are a translator. Translate the given Arabic text to English. Keep any numbers and special characters as is. Return ONLY the translated text, nothing else.',
         },
         {
-          role: "user",
-          content: text
-        }
+          role: 'user',
+          content: text,
+        },
       ],
-      temperature: 0.3
+      temperature: 0.3,
     })
 
     return completion.choices[0]?.message?.content || text
@@ -47,18 +61,25 @@ async function translateToEnglish(text: string): Promise<string> {
 }
 
 export async function POST(req: Request) {
+  if (!isSheetsF1AppendEnabled()) {
+    return NextResponse.json({
+      success: true,
+      skipped: true,
+      message: 'Google Sheet F1 append is disabled (SHEETS_F1_APPEND_ENABLED is not true)',
+    })
+  }
+
   try {
     const supabase = getSupabaseRouteClient()
     const data = await req.json()
-    
+
     console.log('Received data:', {
       emergency_room_id: data.emergency_room_id,
       err_id: data.err_id,
       err_name: data.err_name,
-      state_name: data.state_name
+      state_name: data.state_name,
     })
-    
-    // Get English ERR name from emergency_rooms table
+
     const { data: roomData, error: roomError } = await supabase
       .from('emergency_rooms')
       .select('name, name_ar, err_code')
@@ -72,76 +93,68 @@ export async function POST(req: Request) {
       console.log('Successfully fetched room data:', roomData)
     }
 
-    // Translate necessary fields (excluding state)
-    const [
-      translatedObjectives,
-      translatedTimeframe,
-      translatedSupport
-    ] = await Promise.all([
+    const [translatedObjectives, translatedTimeframe, translatedSupport] = await Promise.all([
       translateToEnglish(data.project_objectives),
       translateToEnglish(data.estimated_timeframe),
-      translateToEnglish(data.additional_support)
+      translateToEnglish(data.additional_support),
     ])
 
-    // Calculate total USD from expenses
     const totalUSD = data.expenses.reduce((sum: number, exp: any) => sum + (exp.total_cost || 0), 0)
 
     console.log('Room data:', roomData)
     console.log('Using ERR name:', roomData?.name)
 
-    // Prepare row data for Google Sheets
     const sheetRow = [
-      data.grant_id,                          // Serial Number
-      roomData?.err_code || data.err_id,      // ERR CODE
-      roomData?.name || '',                   // ERR Name (English)
-      'Pending',                             // Project Status
-      new Date().toLocaleDateString(),       // F1 Date of Submitted
-      '',                                    // Overdue
-      '',                                    // F1
-      '',                                    // # of Base ERR
-      data.donor_name,                       // Project Donor
-      '',                                    // Partner
-      data.state_name,                       // State (English)
-      '',                                    // Responsible
-      data.primary_sectors || '',            // Sector (Primary)
-      data.secondary_sectors || '',          // Sector (Secondary)
-      translatedObjectives,                  // Description of ERRs activity (translated)
-      data.estimated_beneficiaries,          // Target (Ind.)
-      '',                                    // Target (Fam.)
-      '',                                    // MOU Signed
-      '',                                    // Date Transfer
-      totalUSD,                              // USD
-      '',                                    // SDG
-      '',                                    // Rate
-      '',                                    // Start Date (Activity)
-      '',                                    // End Date (Activity)
-      translatedTimeframe,                   // Activity Duration (translated)
-      '',                                    // F4
-      '',                                    // F5
-      '',                                    // Date report completed
-      '',                                    // Reporting Duration
-      '',                                    // Tracker
-      '',                                    // Family
-      '',                                    // Individuals
-      '',                                    // Male >18
-      '',                                    // Female >18
-      '',                                    // Male <18
-      '',                                    // Female <18
-      '',                                    // People with special needs
-      '',                                    // Lessons learned
-      '',                                    // Challenges
-      translatedSupport,                     // Additional Support (translated)
-      '',                                    // Comments
-      ''                                     // Grant Segment
+      data.grant_id,
+      roomData?.err_code || data.err_id,
+      roomData?.name || '',
+      'Pending',
+      new Date().toLocaleDateString(),
+      '',
+      '',
+      '',
+      data.donor_name,
+      '',
+      data.state_name,
+      '',
+      data.primary_sectors || '',
+      data.secondary_sectors || '',
+      translatedObjectives,
+      data.estimated_beneficiaries,
+      '',
+      '',
+      '',
+      totalUSD,
+      '',
+      '',
+      '',
+      '',
+      translatedTimeframe,
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      translatedSupport,
+      '',
+      '',
     ]
 
-    // Append to Google Sheet
+    const sheets = getGoogleSheetsClient()
     const response = await sheets.spreadsheets.values.append({
       spreadsheetId: process.env.GOOGLE_SHEET_ID,
       range: 'Activities!A:AQ',
       valueInputOption: 'USER_ENTERED',
       requestBody: {
-        values: [sheetRow]
+        values: [sheetRow],
       },
     })
 
@@ -149,9 +162,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error('Error updating Google Sheet:', error)
-    return NextResponse.json({ 
-      error: 'Failed to update Google Sheet',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: 'Failed to update Google Sheet',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 }
+    )
   }
-} 
+}

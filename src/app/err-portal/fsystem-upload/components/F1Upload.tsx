@@ -12,6 +12,7 @@ import { supabase } from '@/lib/supabaseClient'
 import type { Donor, State, F1FormData, EmergencyRoom, Sector } from '@/app/api/fsystem/types/fsystem'
 import ExtractedDataReview from './ExtractedDataReview'
 import { cn } from '@/lib/utils'
+import { isSheetsF1AppendEnabledPublic } from '@/lib/sheetsF1AppendEnabled'
 import { MultiSelect, MultiSelectContent, MultiSelectItem, MultiSelectTrigger, MultiSelectValue } from "@/components/ui/multi-select"
 import { X } from 'lucide-react'
 
@@ -407,29 +408,30 @@ export default function F1Upload() {
         }
       }
 
-      // Update Google Sheet with final grant ID and sectors
-      const sheetData = {
-        ...editedData,
-        grant_id: grant_id,
-        err_id: selectedRoom.err_code,
-        err_name: selectedRoom.name_ar || selectedRoom.name,
-        donor_name: selectedDonor.name,
-        emergency_room_id: formData.emergency_room_id,
-        state_name: selectedState.state_name,
-        primary_sectors: primarySectorNames,
-        secondary_sectors: secondarySectorNames
-      }
+      if (isSheetsF1AppendEnabledPublic()) {
+        const sheetData = {
+          ...editedData,
+          grant_id: grant_id,
+          err_id: selectedRoom.err_code,
+          err_name: selectedRoom.name_ar || selectedRoom.name,
+          donor_name: selectedDonor.name,
+          emergency_room_id: formData.emergency_room_id,
+          state_name: selectedState.state_name,
+          primary_sectors: primarySectorNames,
+          secondary_sectors: secondarySectorNames,
+        }
 
-      const sheetResponse = await fetch('/api/sheets/update', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(sheetData)
-      })
+        const sheetResponse = await fetch('/api/sheets/update', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(sheetData),
+        })
 
-      if (!sheetResponse.ok) {
-        console.error('Failed to update Google Sheet:', await sheetResponse.json())
+        if (!sheetResponse.ok) {
+          console.error('Failed to update Google Sheet:', await sheetResponse.json())
+        }
       }
 
       alert('Form uploaded successfully!')
